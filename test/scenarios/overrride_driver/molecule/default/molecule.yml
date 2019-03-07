@@ -13,6 +13,7 @@ lint:
 platforms:
   - name: instance
     image: centos:latest
+    dockerfile: Dockerfile-custom.j2
 provisioner:
   name: ansible
   playbooks:

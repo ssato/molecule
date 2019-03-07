@@ -5,3 +5,11 @@
     - name: Dummy task
       command: /bin/true
       changed_when: false
+    - name: check presence of from-custom-dockerfile
+      stat:
+        path: /from-custom-dockerfile
+      register: result
+    - name: fail if file not found
+      when: result.stat.exists == False
+      fail:
+        msg: "Failed to find /from-custom-dockerfile"
