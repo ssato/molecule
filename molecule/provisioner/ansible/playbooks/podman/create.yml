@@ -13,7 +13,7 @@
         {% elif item.registry.credentials.username is defined and item.registry.credentials.username and
                 item.registry.credentials.password is defined and item.registry.credentials.password %}
         {% else %}{# Try to login with authfile if username and password are not given #}
-        --authfile {{ item.registry.credentials.authfile | default(lookup('env','XDG_RUNTIME_DIR')'/containers/auth.json') }}
+        --authfile {{ item.registry.credentials.authfile | default('%s/containers/auth.json' | format(lookup('env','XDG_RUNTIME_DIR'))) }}
         {% endif %}
         {{ item.registry.url }}
       when:
