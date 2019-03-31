@@ -1,0 +1,117 @@
+---
+- name: Create
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  no_log: "{{ not (lookup('env', 'MOLECULE_DEBUG') | bool or molecule_yml.provisioner.log|default(false) | bool) }}"
+  tasks:
+    - name: Log into a Container registry
+      command: >-
+        {{ item.registry.command | default('podman login') }}
+        {% if item.registry.command_options is defined and item.registry.command_options | bool %}
+        {{ item.registry.command_options | join(' ') }}
+        {% elif item.registry.credentials.username is defined and item.registry.credentials.username and
+                item.registry.credentials.password is defined and item.registry.credentials.password %}
+        {% else %}{# Try to login with authfile if username and password are not given #}
+        --authfile {{ item.registry.credentials.authfile | default(lookup('env','XDG_RUNTIME_DIR')'/containers/auth.json') }}
+        {% endif %}
+        {{ item.registry.url }}
+      when:
+        - item.registry is defined
+        - item.registry.credentials is defined
+        - item.registry.credentials.username is defined or item.registry.credentials.authfile is defined
+      loop: "{{ molecule_yml.platforms }}"
+
+    - name: Create Dockerfiles from image names
+      template:
+        src: "{{ molecule_scenario_directory + '/' + (item.dockerfile | default( 'Dockerfile.j2')) }}"
+        dest: "{{ molecule_ephemeral_directory }}/Dockerfile_{{ item.image | regex_replace('[^a-zA-Z0-9_]', '_') }}"
+      loop: "{{ molecule_yml.platforms }}"
+      when: not item.pre_build_image | default(false)
+      register: platforms
+
+    - name: Discover local container images
+      command: >-
+        {{ item.images_command | default('podman images') }}
+        {{ item.images_command_options | default(['--noheading']) | join(' ') }}
+        molecule_local/{{ item.item.name }}
+      loop: "{{ platforms.results }}"
+      when: not item.pre_build_image | default(false)
+      ignore_errors: true
+      register: container_images
+
+    - name: Build an Ansible compatible image
+      command: >-
+        {{ item.item.build_image_command | default('podman build') }}
+        --tag molecule_local/{{ item.item.image }}
+        --file {{ item.item.dockerfile | default(item.invocation.module_args.dest) }}
+        {% if item.item.pull | default('false') %}--pull{% endif %}
+        {% for barg in item.item.buildargs | default([]) %}--build-arg {{ barg }}{% endfor %}
+        {{ molecule_ephemeral_directory }}
+      loop: "{{ platforms.results }}"
+      when:
+        - platforms.changed or container_images.results | map(attribute='rc') | select('ne', 0) | list | count >= 0
+        - not item.item.pre_build_image | default(false)
+
+    - name: Determine the CMD directives
+      set_fact:
+        command_directives_dict: >-
+          {{ command_directives_dict | default({}) |
+             combine({ item.name: item.command | default('bash -c "while true; do sleep 10000; done"') })
+          }}
+      loop: "{{ molecule_yml.platforms }}"
+      when: item.override_command | default(true)
+
+    - name: Create molecule instance(s)
+      command: >-
+        {{ item.run_command | default('podman run') }}
+        --name {{ item.name }}
+        --hostname {{ item.hostname | default(item.name) }}
+        --log-driver json-file
+        {% if item.pid_mode | default(false) %}--pid {{ item.pid_mode }}{% endif %}
+        {% if item.privileged | default(false) %}--privileged{% endif %}
+        {% for sopt in item.security_opts | default([]) -%}
+        --security-opt {{ sopt }}
+        {% endfor %}
+        {% for vol in item.volumes| default([]) -%}
+        --volume {{ vol }}
+        {% endfor %}
+        {% for tmp in item.tmpfs | default([]) -%}
+        --tmpfs {{ tmp }}
+        {% endfor %}
+        {% for cap in item.capabilities | default([]) -%}
+        --cap-add {{ cap }}
+        {% endfor %}
+        {% for port in item.exposed_ports | default([]) -%}
+        --expose {{ port }}
+        {% endfor %}
+        {% for port in item.published_ports | default([]) -%}
+        --publish {{ port }}
+        {% endfor %}
+        {% for limit in item.ulimits | default([]) -%}
+        --ulimit {{ limit }}
+        {% endfor %}
+        {% for net in item.networks | default([]) -%}
+        --network {{ net }}
+        {% endfor %}
+        {% if item.network_mode | default(false) %}--network {{ item.network_mode }}{% endif %}
+        {% for ns in item.dns_servers | default([]) -%}
+        --dns {{ ns }}
+        {% endfor %}
+        {% for ev in item.env | default([]) -%}
+        --env {{ ev }}
+        {% endfor %}
+        {{ item.pre_build_image | default(false) | ternary('', 'molecule_local/') }}{{ item.image }}
+        {{ (command_directives_dict | default({}))[item.name] | default(omit) }}
+      register: server
+      loop: "{{ molecule_yml.platforms }}"
+      async: 7200
+      poll: 0
+
+    - name: Wait for instance(s) creation to complete
+      async_status:
+        jid: "{{ item.ansible_job_id }}"
+      register: container_jobs
+      until: container_jobs.finished
+      retries: 300
+      loop: "{{ server.results }}"

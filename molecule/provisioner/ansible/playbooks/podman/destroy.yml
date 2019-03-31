@@ -1,0 +1,19 @@
+---
+- name: Destroy
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  no_log: "{{ not (lookup('env', 'MOLECULE_DEBUG') | bool or molecule_yml.provisioner.log|default(false) | bool) }}"
+  tasks:
+    - name: Destroy molecule instance(s)
+      command: >-
+        {% if item.destroy_command | default(false) -%}
+        {{ item.destroy_command }} {{ item.destroy_command_options | default([]) | join(' ') }}
+        {% elif item.force_kill | default(true) -%}
+        podman stop
+        {% else -%}
+        podman kill --signal TERM
+        {% endif %}
+        {{ item.name }}
+      loop: "{{ molecule_yml.platforms }}"
+      when: not item.pre_build_image | default(false)
